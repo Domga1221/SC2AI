@@ -1,4 +1,6 @@
 from asyncio.windows_events import NULL
+import math
+from turtle import pos
 from sc2.bot_ai import BotAI # parent ai class to inherit from
 from sc2.data import Difficulty, Race
 from sc2.main import run_game
@@ -13,6 +15,8 @@ from sc2.ids.ability_id import AbilityId
 class DomsBotDT(BotAI):
     scout_38s = False
     scoutingProbe_38s = NULL
+
+    pushPylonPosition = None
 
     async def on_step(self, iteration: int):
         print(f"{iteration}, n_workers: {self.workers.amount}, n_idle_workers: {self.workers.idle.amount},", \
@@ -30,19 +34,20 @@ class DomsBotDT(BotAI):
 
             # first pylon
             if self.structures(UnitTypeId.PYLON).amount == 0 and self.can_afford(UnitTypeId.PYLON):
-                await self.build(UnitTypeId.PYLON, near=nexus)
+                await self.build(UnitTypeId.PYLON, near=nexus.position.towards(self.game_info.map_center, 4))
 
             # train probes
             if nexus.is_idle and self.can_afford(UnitTypeId.PROBE) and self.workers.amount < 23:
                 nexus.train(UnitTypeId.PROBE)
 
             # scout
-            if self.time >= 3 and not self.scout_38s: 
+            if self.time >= 38 and not self.scout_38s: 
                 await self.scout()
                 self.scout_38s = True
             
             # gateway
-            if not self.structures(UnitTypeId.GATEWAY):
+            if (not self.structures(UnitTypeId.GATEWAY) and self.structures(UnitTypeId.WARPGATE).amount < 2 
+                and not self.already_pending(UnitTypeId.GATEWAY)):
                 if self.can_afford(UnitTypeId.GATEWAY):
                     await self.build(UnitTypeId.GATEWAY, near=self.structures(UnitTypeId.PYLON).closest_to(nexus))
 
@@ -67,7 +72,90 @@ class DomsBotDT(BotAI):
             # second pylon
             if (self.structures(UnitTypeId.PYLON).ready.amount == 1 and self.already_pending_upgrade(UpgradeId.WARPGATERESEARCH) > 0
                 and self.can_afford(UnitTypeId.PYLON) and self.already_pending(UnitTypeId.PYLON) == 0):
-                await self.build(UnitTypeId.PYLON, near=nexus)
+                await self.build(UnitTypeId.PYLON, near=nexus.position.towards(self.game_info.map_center, 7))
+
+            # twilight council
+            if not self.structures(UnitTypeId.TWILIGHTCOUNCIL) and self.can_afford(UnitTypeId.TWILIGHTCOUNCIL):
+                await self.build(UnitTypeId.TWILIGHTCOUNCIL, near=self.structures(UnitTypeId.PYLON).furthest_to(nexus))
+
+            # push pylon 
+            if (self.already_pending_upgrade(UpgradeId.WARPGATERESEARCH) > 0 and self.structures(UnitTypeId.PYLON).amount == 2 
+                and self.can_afford(UnitTypeId.PYLON) and self.pushPylonPosition is None):
+                self.pushPylonPosition = self.enemy_start_locations[0].towards(self.game_info.map_center, 40)
+                await self.build(UnitTypeId.PYLON, near=self.pushPylonPosition)
+            
+            # dark shrine
+            if(self.structures(UnitTypeId.TWILIGHTCOUNCIL) and self.structures(UnitTypeId.PYLON).ready.amount >= 2
+                and self.can_afford(UnitTypeId.DARKSHRINE) and self.structures(UnitTypeId.DARKSHRINE).amount == 0):
+                await self.build(UnitTypeId.DARKSHRINE, near=self.structures(UnitTypeId.PYLON).closest_to(nexus))
+
+            # additional gateways
+            if(self.structures(UnitTypeId.DARKSHRINE) and (self.structures(UnitTypeId.WARPGATE).amount + self.structures(UnitTypeId.GATEWAY).amount) < 5):
+                await self.build(UnitTypeId.GATEWAY, near=nexus)
+
+            # darktemplars
+            if(self.structures(UnitTypeId.DARKSHRINE) and self.structures(UnitTypeId.WARPGATE).ready.amount >= 1 
+                and self.can_afford(UnitTypeId.DARKTEMPLAR)):
+                #print("ready for darktemplar production")
+                for warpgate in self.structures(UnitTypeId.WARPGATE):
+                    warpgate.warp_in(UnitTypeId.DARKTEMPLAR, self.pushPylonPosition.position.random_on_distance(2))
+                    '''ordered_pylons = sorted(self.structures(UnitTypeId.PYLON).ready, key=lambda pylon: pylon.distance_to(warpgate))
+                    position = ordered_pylons[-1].position.random_on_distance(2)
+                    placement = await self.find_placement(AbilityId.WARPGATETRAIN_DARKTEMPLAR, position, placement_step=1)
+                    if placement is None:
+                        print(f"can't place dark templar")
+                        return
+                    warpgate.warp_in(UnitTypeId.DARKTEMPLAR, placement)'''
+            # zealots if not enough gas
+            elif not self.can_afford(UnitTypeId.DARKTEMPLAR) and self.minerals > self.calculate_cost(UnitTypeId.DARKTEMPLAR).minerals * 4:
+                for warpgate in self.structures(UnitTypeId.WARPGATE):
+                    warpgate.warp_in(UnitTypeId.ZEALOT, self.pushPylonPosition.position.random_on_distance(2))
+
+            # 4th and 5th pylon
+            #if self.structures(UnitTypeId.DARKSHRINE) and self.structures(UnitTypeId.PYLON).amount <= 5:
+            #   await self.build(UnitTypeId.PYLON, near=nexus.position.towards(self.game_info.map_center, 7))
+            if self.already_pending(UnitTypeId.PYLON) == 0 and self.supply_left <= 4:
+                await self.build(UnitTypeId.PYLON, near=nexus.position.towards(self.game_info.map_center, 10))
+
+            # attack with dark templars
+            if self.units(UnitTypeId.DARKTEMPLAR):
+                #print(f"attack with dark templars")
+                if self.enemy_units:
+                    for darktemplar in self.units(UnitTypeId.DARKTEMPLAR):
+                        closestEnemy = self.enemy_units.closest_to(darktemplar)
+                        if closestEnemy.position.is_closer_than(7, darktemplar.position):
+                            darktemplar.attack(self.enemy_units.closest_to(darktemplar))   
+                
+                elif self.enemy_structures:
+                    for darktemplar in self.units(UnitTypeId.DARKTEMPLAR).idle:
+                        darktemplar.attack(random.choice(self.enemy_structures))
+                
+                else:
+                    for darktemplar in self.units(UnitTypeId.DARKTEMPLAR).idle:
+                        darktemplar.attack(self.enemy_start_locations[0])
+
+            if self.units(UnitTypeId.ZEALOT).amount >= 3 or self.units(UnitTypeId.DARKTEMPLAR).amount >= 1:
+                if self.enemy_units:
+                    for zealot in self.units(UnitTypeId.ZEALOT):
+                        zealot.attack(self.enemy_start_locations[0])
+
+            # idle guard
+            for unit in self.units():
+                if unit.is_idle:
+                    # check natural
+                    closestExpansion = None
+                    # get closes expansion of enemy, e.g. natural expansion
+                    for expansionLocation in self.expansion_locations:
+                        if position.Point2(self.enemy_start_locations[0]).position.distance_to(expansionLocation) < self.EXPANSION_GAP_THRESHOLD:
+                            destination = await self._client.query_pathing(self.enemy_start_locations[0], expansionLocation)
+                            if destination is None:
+                                continue
+                            if destination < math.inf:
+                                closestExpansion = expansionLocation
+                                break
+                    unit.attack(closestExpansion)
+                    
+
 
             # train warpgate
             '''gateway = self.structures.select(UnitTypeId.GATEWAY)
