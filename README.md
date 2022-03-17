@@ -8,4 +8,6 @@
 </ul>
 
 <h2>Demo match</h2>
-- YouTube (game not running in realtime): https://youtu.be/l-JtYDS-ciA
+<ul>
+  <li>YouTube (game not running in realtime): https://youtu.be/l-JtYDS-ciA</li>
+</ul>
